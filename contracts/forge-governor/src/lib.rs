@@ -391,25 +391,27 @@ impl GovernorContract {
 
     /// Return a proposal by its ID.
     ///
-    /// Read-only; does not modify state. Returns `None` if no proposal exists
-    /// with the given ID.
+    /// Read-only; does not modify state.
     ///
     /// # Parameters
     /// - `proposal_id` — The ID returned by [`propose`](Self::propose).
     ///
     /// # Returns
-    /// `Some(`[`Proposal`]`)` if found, `None` otherwise.
+    /// `Ok(`[`Proposal`]`)` with the full proposal details.
+    ///
+    /// # Errors
+    /// - [`GovernorError::ProposalNotFound`] — No proposal exists with `proposal_id`.
     ///
     /// # Example
     /// ```text
-    /// if let Some(p) = client.get_proposal(&id) {
-    ///     println!("votes_for: {}", p.votes_for);
-    /// }
+    /// let proposal = client.get_proposal(&id)?;
+    /// println!("votes_for: {}", proposal.votes_for);
     /// ```
-    pub fn get_proposal(env: Env, proposal_id: u64) -> Option<Proposal> {
+    pub fn get_proposal(env: Env, proposal_id: u64) -> Result<Proposal, GovernorError> {
         env.storage()
             .persistent()
             .get(&DataKey::Proposal(proposal_id))
+            .ok_or(GovernorError::ProposalNotFound)
     }
 
     /// Return the governor configuration set at initialization.
@@ -528,6 +530,38 @@ mod tests {
         client.vote(&voter, &pid, &true, &100);
         let result = client.try_vote(&voter, &pid, &true, &100);
         assert_eq!(result, Err(Ok(GovernorError::AlreadyVoted)));
+    }
+
+    #[test]
+    fn test_get_proposal_existing() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 1000);
+        let client = setup(&env);
+
+        let proposer = Address::generate(&env);
+        let title = String::from_str(&env, "My Proposal");
+        let description = String::from_str(&env, "Details here");
+        let pid = client.propose(&proposer, &title, &description);
+
+        let proposal = client.get_proposal(&pid);
+        assert_eq!(proposal.proposer, proposer);
+        assert_eq!(proposal.title, title);
+        assert_eq!(proposal.description, description);
+        assert_eq!(proposal.state, ProposalState::Active);
+        assert_eq!(proposal.vote_start, 1000);
+        assert_eq!(proposal.votes_for, 0);
+        assert_eq!(proposal.votes_against, 0);
+    }
+
+    #[test]
+    fn test_get_proposal_not_found() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = setup(&env);
+
+        let result = client.try_get_proposal(&999);
+        assert!(matches!(result, Err(Ok(GovernorError::ProposalNotFound))));
     }
 
     #[test]
