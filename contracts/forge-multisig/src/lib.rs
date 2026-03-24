@@ -476,6 +476,8 @@ impl MultisigContract {
             .get(&DataKey::Owners)
             .unwrap_or(Vec::new(&env));
         owners.contains(&address)
+    }
+
     /// Return the number of owner approvals for a proposal.
     ///
     /// Lightweight read-only view intended for UIs that only need approval count.
@@ -684,38 +686,39 @@ mod tests {
     fn test_get_approval_count_zero() {
         let env = Env::default();
         env.mock_all_auths();
-        env.register(MultisigContract, ());
+        let (client, _, _, _) = setup_2of3(&env);
 
-        assert_eq!(MultisigContract::get_approval_count(env, 999), 0);
+        assert_eq!(client.get_approval_count(&999), 0);
     }
 
     #[test]
     fn test_get_approval_count_partial() {
         let env = Env::default();
         env.mock_all_auths();
-        env.register(MultisigContract, ());
-        let (o1, _, _) = setup_2of3(&env);
+        let (client, o1, _, _) = setup_2of3(&env);
         let token = Address::generate(&env);
         let to = Address::generate(&env);
 
-        let pid = MultisigContract::propose(env.clone(), o1, to, token, 500).unwrap();
+        let pid = client.propose(&o1, &to, &token, &500);
 
-        assert_eq!(MultisigContract::get_approval_count(env, pid), 1);
+        assert_eq!(client.get_approval_count(&pid), 1);
     }
 
     #[test]
     fn test_get_approval_count_full() {
         let env = Env::default();
         env.mock_all_auths();
-        env.register(MultisigContract, ());
-        let (o1, o2, _) = setup_2of3(&env);
+        let (client, o1, o2, _) = setup_2of3(&env);
         let token = Address::generate(&env);
         let to = Address::generate(&env);
 
-        let pid = MultisigContract::propose(env.clone(), o1, to, token, 500).unwrap();
-        MultisigContract::approve(env.clone(), o2, pid).unwrap();
+        let pid = client.propose(&o1, &to, &token, &500);
+        client.approve(&o2, &pid);
 
-        assert_eq!(MultisigContract::get_approval_count(env, pid), 2);
+        assert_eq!(client.get_approval_count(&pid), 2);
+    }
+
+    #[test]
     fn test_rejected_proposal_cannot_execute() {
         let env = Env::default();
         env.mock_all_auths();
@@ -749,9 +752,21 @@ mod tests {
 
         assert!(!client.is_owner(&non_owner));
     }
-}
+
+    #[test]
+    fn test_get_threshold_returns_initialized_value() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _, _, _) = setup_2of3(&env);
+
+        // setup_2of3 initializes with threshold = 2
+        assert_eq!(client.get_threshold(), 2);
+    }
+
+    #[test]
     fn test_get_owners_list() {
         let env = Env::default();
+        env.mock_all_auths();
         let (client, o1, o2, o3) = setup_2of3(&env);
         let owners = client.get_owner_list();
         assert_eq!(owners.len(), 3);
