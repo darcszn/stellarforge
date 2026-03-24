@@ -103,10 +103,10 @@ impl ForgeVesting {
     ///   or `cliff_seconds` > `duration_seconds`.
     ///
     /// # Example
-    /// ```text
+    /// ```rust,ignore
     /// // Vest 1 000 000 tokens over 1000 s with a 100 s cliff.
     /// client.initialize(&token, &beneficiary, &admin, &1_000_000, &100, &1000);
-    /// ```
+    /// ```rust,ignore
     pub fn initialize(
         env: Env,
         token: Address,
@@ -167,10 +167,10 @@ impl ForgeVesting {
     /// - [`VestingError::NothingToClaim`] — All vested tokens have already been claimed.
     ///
     /// # Example
-    /// ```text
+    /// ```rust,ignore
     /// // After the cliff has passed:
     /// let claimed = client.claim(); // returns tokens vested so far
-    /// ```
+    /// ```rust,ignore
     pub fn claim(env: Env) -> Result<i128, VestingError> {
         let config: VestingConfig = env
             .storage()
@@ -232,10 +232,10 @@ impl ForgeVesting {
     /// - [`VestingError::Cancelled`] — The schedule is already cancelled.
     ///
     /// # Example
-    /// ```text
+    /// ```rust,ignore
     /// // Admin decides to terminate the schedule early:
     /// client.cancel(); // unvested tokens are returned to admin
-    /// ```
+    /// ```rust,ignore
     pub fn cancel(env: Env) -> Result<(), VestingError> {
         let mut config: VestingConfig = env
             .storage()
@@ -287,10 +287,10 @@ impl ForgeVesting {
     /// - [`VestingError::SameAdmin`] — `new_admin` is the same as the current admin.
     ///
     /// # Example
-    /// ```text
+    /// ```rust,ignore
     /// // Transfer admin rights to a new multisig:
     /// client.transfer_admin(&new_admin_address);
-    /// ```
+    /// ```rust,ignore
     pub fn transfer_admin(env: Env, new_admin: Address) -> Result<(), VestingError> {
         let mut config: VestingConfig = env
             .storage()
@@ -334,12 +334,12 @@ impl ForgeVesting {
     /// - [`VestingError::NotInitialized`] — `initialize` has not been called.
     ///
     /// # Example
-    /// ```text
+    /// ```rust,ignore
     /// let status = client.get_status();
     /// if status.cliff_reached {
     ///     println!("Claimable: {}", status.claimable);
     /// }
-    /// ```
+    /// ```rust,ignore
     pub fn get_status(env: Env) -> Result<VestingStatus, VestingError> {
         let config: VestingConfig = env
             .storage()
@@ -378,10 +378,10 @@ impl ForgeVesting {
     /// - [`VestingError::NotInitialized`] — `initialize` has not been called.
     ///
     /// # Example
-    /// ```text
+    /// ```rust,ignore
     /// let config = client.get_config();
     /// println!("Beneficiary: {:?}", config.beneficiary);
-    /// ```
+    /// ```rust,ignore
     pub fn get_config(env: Env) -> Result<VestingConfig, VestingError> {
         env.storage()
             .instance()
@@ -439,9 +439,34 @@ mod tests {
     fn test_double_initialize_fails() {
         let (env, contract_id, token, beneficiary, admin) = setup();
         let client = ForgeVestingClient::new(&env, &contract_id);
+
+        // Initial setup
         client.initialize(&token, &beneficiary, &admin, &1_000_000, &100, &1000);
-        let result = client.try_initialize(&token, &beneficiary, &admin, &1_000_000, &100, &1000);
+
+        // Attempt re-initialization with DIFFERENT values
+        let new_beneficiary = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+        let result = client.try_initialize(
+            &token,
+            &new_beneficiary,
+            &new_admin,
+            &9_999_999,
+            &500,
+            &5000,
+        );
+
+        // Assert it fails with AlreadyInitialized
         assert_eq!(result, Err(Ok(VestingError::AlreadyInitialized)));
+
+        // Verify original state is unchanged
+        let config = client.get_config();
+        assert_eq!(config.token, token);
+        assert_eq!(config.beneficiary, beneficiary);
+        assert_eq!(config.admin, admin);
+        assert_eq!(config.total_amount, 1_000_000);
+        assert_eq!(config.cliff_seconds, 100);
+        assert_eq!(config.duration_seconds, 1000);
+        assert!(!config.cancelled);
     }
 
     #[test]
@@ -577,7 +602,6 @@ mod tests {
         let config = client.get_config();
         assert_eq!(config.admin, new_admin);
     }
-
 
     #[test]
     fn test_transfer_admin_to_same_admin_fails() {
