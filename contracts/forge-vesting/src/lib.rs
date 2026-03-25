@@ -274,19 +274,29 @@ impl ForgeVesting {
         let now = env.ledger().timestamp();
         let vested = Self::compute_vested(&config, now);
         let claimed: i128 = env.storage().instance().get(&DataKey::Claimed).unwrap_or(0);
-        let returnable = config.total_amount - vested.max(claimed);
+        
+        // Split tokens: vested-but-unclaimed goes to beneficiary, unvested goes to admin
+        let to_beneficiary = vested - claimed;
+        let to_admin = config.total_amount - vested;
 
         config.cancelled = true;
         env.storage().instance().set(&DataKey::Config, &config);
 
-        if returnable > 0 {
-            let token_client = token::Client::new(&env, &config.token);
-            token_client.transfer(&env.current_contract_address(), &config.admin, &returnable);
+        let token_client = token::Client::new(&env, &config.token);
+        
+        // Transfer vested-but-unclaimed tokens to beneficiary
+        if to_beneficiary > 0 {
+            token_client.transfer(&env.current_contract_address(), &config.beneficiary, &to_beneficiary);
+        }
+        
+        // Transfer unvested tokens to admin
+        if to_admin > 0 {
+            token_client.transfer(&env.current_contract_address(), &config.admin, &to_admin);
         }
 
         env.events().publish(
             (Symbol::new(&env, "vesting_cancelled"),),
-            (&config.admin, returnable),
+            (&config.admin, to_admin, &config.beneficiary, to_beneficiary),
         );
 
         Ok(())
@@ -730,6 +740,23 @@ mod tests {
 
         let tc = soroban_sdk::token::Client::new(&env, &token_id);
         // 400/1000 * 1_000_000 = 400_000 vested → beneficiary
+        // remaining 600_000 → admin
+        assert_eq!(tc.balance(&beneficiary), 400_000);
+        assert_eq!(tc.balance(&admin), 600_000);
+    }
+
+    #[test]
+    fn test_cancel_without_claim_sends_vested_to_beneficiary() {
+        let (env, contract_id, token_id, beneficiary, admin) = setup_with_token();
+        let client = ForgeVestingClient::new(&env, &contract_id);
+        client.initialize(&token_id, &beneficiary, &admin, &1_000_000, &100, &1000);
+
+        // advance 400s — past cliff, 40% vested, but NO claim
+        env.ledger().with_mut(|l| l.timestamp += 400);
+        client.cancel();
+
+        let tc = soroban_sdk::token::Client::new(&env, &token_id);
+        // 400/1000 * 1_000_000 = 400_000 vested → beneficiary (even without claim)
         // remaining 600_000 → admin
         assert_eq!(tc.balance(&beneficiary), 400_000);
         assert_eq!(tc.balance(&admin), 600_000);
