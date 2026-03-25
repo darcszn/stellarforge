@@ -91,6 +91,7 @@ pub enum VestingError {
     InvalidConfig = 7,
     SameAdmin = 8,
     SameBeneficiary = 9,
+    BeneficiaryAsAdmin = 10,
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -143,6 +144,9 @@ impl ForgeVesting {
         }
         if total_amount <= 0 || duration_seconds == 0 || cliff_seconds > duration_seconds {
             return Err(VestingError::InvalidConfig);
+        }
+        if admin == beneficiary {
+            return Err(VestingError::BeneficiaryAsAdmin);
         }
 
         admin.require_auth();
@@ -275,18 +279,30 @@ impl ForgeVesting {
         let vested = Self::compute_vested(&config, now);
         let claimed = Self::get_claimed(&env);
         let returnable = config.total_amount - vested.max(claimed);
+        let claimed: i128 = env.storage().instance().get(&DataKey::Claimed).unwrap_or(0);
+        
+        // Split tokens: vested-but-unclaimed goes to beneficiary, unvested goes to admin
+        let to_beneficiary = vested - claimed;
+        let to_admin = config.total_amount - vested;
 
         config.cancelled = true;
         env.storage().instance().set(&DataKey::Config, &config);
 
-        if returnable > 0 {
-            let token_client = token::Client::new(&env, &config.token);
-            token_client.transfer(&env.current_contract_address(), &config.admin, &returnable);
+        let token_client = token::Client::new(&env, &config.token);
+        
+        // Transfer vested-but-unclaimed tokens to beneficiary
+        if to_beneficiary > 0 {
+            token_client.transfer(&env.current_contract_address(), &config.beneficiary, &to_beneficiary);
+        }
+        
+        // Transfer unvested tokens to admin
+        if to_admin > 0 {
+            token_client.transfer(&env.current_contract_address(), &config.admin, &to_admin);
         }
 
         env.events().publish(
             (Symbol::new(&env, "vesting_cancelled"),),
-            (&config.admin, returnable),
+            (&config.admin, to_admin, &config.beneficiary, to_beneficiary),
         );
 
         Ok(())
@@ -324,6 +340,9 @@ impl ForgeVesting {
 
         if config.admin == new_admin {
             return Err(VestingError::SameAdmin);
+        }
+        if config.beneficiary == new_admin {
+            return Err(VestingError::BeneficiaryAsAdmin);
         }
 
         let old_admin = config.admin;
@@ -744,6 +763,23 @@ mod tests {
     }
 
     #[test]
+    fn test_cancel_without_claim_sends_vested_to_beneficiary() {
+        let (env, contract_id, token_id, beneficiary, admin) = setup_with_token();
+        let client = ForgeVestingClient::new(&env, &contract_id);
+        client.initialize(&token_id, &beneficiary, &admin, &1_000_000, &100, &1000);
+
+        // advance 400s — past cliff, 40% vested, but NO claim
+        env.ledger().with_mut(|l| l.timestamp += 400);
+        client.cancel();
+
+        let tc = soroban_sdk::token::Client::new(&env, &token_id);
+        // 400/1000 * 1_000_000 = 400_000 vested → beneficiary (even without claim)
+        // remaining 600_000 → admin
+        assert_eq!(tc.balance(&beneficiary), 400_000);
+        assert_eq!(tc.balance(&admin), 600_000);
+    }
+
+    #[test]
     fn test_transfer_admin_success() {
         let (env, contract_id, token, beneficiary, admin) = setup();
         let client = ForgeVestingClient::new(&env, &contract_id);
@@ -789,6 +825,24 @@ mod tests {
         client.initialize(&token, &beneficiary, &admin, &1_000_000, &100, &1000);
         let result = client.try_transfer_admin(&admin);
         assert_eq!(result, Err(Ok(VestingError::SameAdmin)));
+    }
+
+    #[test]
+    fn test_transfer_admin_to_beneficiary_fails() {
+        let (env, contract_id, token, beneficiary, admin) = setup();
+        let client = ForgeVestingClient::new(&env, &contract_id);
+        client.initialize(&token, &beneficiary, &admin, &1_000_000, &100, &1000);
+        let result = client.try_transfer_admin(&beneficiary);
+        assert_eq!(result, Err(Ok(VestingError::BeneficiaryAsAdmin)));
+    }
+
+    #[test]
+    fn test_initialize_with_admin_as_beneficiary_fails() {
+        let (env, contract_id, token, _, _) = setup();
+        let client = ForgeVestingClient::new(&env, &contract_id);
+        let same_address = Address::generate(&env);
+        let result = client.try_initialize(&token, &same_address, &same_address, &1_000_000, &100, &1000);
+        assert_eq!(result, Err(Ok(VestingError::BeneficiaryAsAdmin)));
     }
 
     #[test]
